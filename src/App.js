@@ -14,12 +14,12 @@ if (isCanvas) {
   firebaseConfig = JSON.parse(__firebase_config);
 } else if (typeof process !== 'undefined' && process.env) {
   firebaseConfig = {
-    apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "demo",
-    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "demo",
-    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "demo",
-    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "demo",
-    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || "demo",
-    appId: process.env.REACT_APP_FIREBASE_APP_ID || "demo"
+    apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "AIzaSyAbHSu9B-nfvdSYwJ5eC7lRm5thw1N0W4Q",
+    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "lector-hechizado.firebaseapp.com",
+    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "lector-hechizado",
+    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "lector-hechizado.firebasestorage.app",
+    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || "480668218490",
+    appId: process.env.REACT_APP_FIREBASE_APP_ID || "480668218490:web:e579f0bff34c7db98ab7c3"
   };
 }
 
