@@ -77,7 +77,7 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [isRendering, setIsRendering] = useState(false);
-  const [scaleMode, setScaleMode] = useState('auto'); // auto, width, height, manual
+  const [scaleMode, setScaleMode] = useState('fit'); // auto, fit, width, height, manual
   const [customScale, setCustomScale] = useState(1.2); // Para el zoom manual (+ y -)
   const [readerBrightness, setReaderBrightness] = useState(100);
   const [showFinishModal, setShowFinishModal] = useState(false);
@@ -167,11 +167,18 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [readingBook, currentPage, totalPages, isRendering, showFinishModal]);
 
+  // Lógica de Filtrado según la Pestaña Activa
   const displayedItems = allItems.filter(item => {
+    // Si estamos en la pestaña de Finalizados, mostramos TODOS los libros terminados en forma de lista
+    if (currentTab === 'finished') {
+      return item.type !== 'folder' && item.status === 'finished';
+    }
+    
+    // Si estamos en Lecturas Activas, mantenemos el sistema de navegación por carpetas
     if ((item.parentId || null) !== currentFolder) return false;
     if (item.type === 'folder') return true;
     const status = item.status || 'reading';
-    return status === currentTab;
+    return status === 'reading';
   });
 
   const buildBreadcrumbs = () => {
@@ -368,7 +375,6 @@ export default function App() {
       const page = await pdf.getPage(1);
       const viewport = page.getViewport({ scale: 0.5 });
       
-      // Mejorar también la miniatura para pantallas retina
       const outputScale = window.devicePixelRatio || 1;
       const canvas = document.createElement('canvas');
       canvas.width = Math.floor(viewport.width * outputScale);
@@ -501,7 +507,11 @@ export default function App() {
 
   const handleFinishBook = async () => {
     try {
-      await updateDoc(getItemDocRef(user.uid, readingBook.id), { status: 'finished', currentPage: totalPages });
+      await updateDoc(getItemDocRef(user.uid, readingBook.id), { 
+        status: 'finished', 
+        currentPage: totalPages,
+        finishedAt: serverTimestamp() // Guardamos la fecha exacta del sello
+      });
       setShowFinishModal(false);
       closeBook();
       mostrarMensaje("Tomo sellado con éxito.");
@@ -521,11 +531,18 @@ export default function App() {
     setCurrentPage(book.currentPage || 1); 
     setTotalPages(0);
     setPdfInstance(null); 
-    setScaleMode('auto'); 
+    setScaleMode('fit'); // Ahora la escala predeterminada garantiza que quepa en pantalla
     setCustomScale(1.2);
     setReaderBrightness(100);
     setShowFinishModal(false);
     
+    // Almacenamos la fecha de la primera vez que se abre el documento
+    if (!book.startedAt) {
+      try {
+        await updateDoc(getItemDocRef(user.uid, book.id), { startedAt: serverTimestamp() });
+      } catch(e) { console.error("Error registrando la fecha de inicio", e); }
+    }
+
     if (window.pdfjsLib) {
       const loadingTask = window.pdfjsLib.getDocument(book.url);
       loadingTask.promise.then(pdf => {
@@ -543,26 +560,31 @@ export default function App() {
         let newScale = 1.2;
         const container = viewerContainerRef.current;
         
-        if (scaleMode === 'width') newScale = (container.clientWidth - 40) / baseViewport.width;
-        else if (scaleMode === 'height') newScale = (container.clientHeight - 40) / baseViewport.height;
-        else if (scaleMode === 'manual') newScale = customScale;
+        // Lógica para modo FIT (Ajustar a pantalla)
+        if (scaleMode === 'fit' || scaleMode === 'auto') {
+          const scaleWidth = (container.clientWidth - 40) / baseViewport.width;
+          const scaleHeight = (container.clientHeight - 40) / baseViewport.height;
+          newScale = Math.min(scaleWidth, scaleHeight);
+        } else if (scaleMode === 'width') {
+          newScale = (container.clientWidth - 40) / baseViewport.width;
+        } else if (scaleMode === 'height') {
+          newScale = (container.clientHeight - 40) / baseViewport.height;
+        } else if (scaleMode === 'manual') {
+          newScale = customScale;
+        }
 
         const viewport = page.getViewport({ scale: newScale });
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d');
         
-        // Magia para resoluciones Retina / Móviles (Alta Densidad de Píxeles)
         const outputScale = window.devicePixelRatio || 1;
         
-        // Multiplicamos la resolución interna del canvas
         canvas.width = Math.floor(viewport.width * outputScale);
         canvas.height = Math.floor(viewport.height * outputScale);
         
-        // Mantenemos el tamaño físico en pantalla mediante CSS
         canvas.style.width = Math.floor(viewport.width) + "px";
         canvas.style.height = Math.floor(viewport.height) + "px";
 
-        // Aplicamos la transformación matemática para escalar el contexto
         const transform = outputScale !== 1 
           ? [outputScale, 0, 0, outputScale, 0, 0] 
           : null;
@@ -632,9 +654,9 @@ export default function App() {
             </div>
 
             {/* Controles de Escala y Zoom */}
+            <button onClick={() => setScaleMode('fit')} className={`px-2 py-1 text-xs border ${scaleMode === 'fit' ? 'bg-red-900 border-red-700 text-white' : 'border-neutral-700 text-neutral-400 hover:border-red-900'}`}>[Ajustar]</button>
             <button onClick={() => setScaleMode('width')} className={`px-2 py-1 text-xs border ${scaleMode === 'width' ? 'bg-red-900 border-red-700 text-white' : 'border-neutral-700 text-neutral-400 hover:border-red-900'}`}>[↔]</button>
             <button onClick={() => setScaleMode('height')} className={`px-2 py-1 text-xs border ${scaleMode === 'height' ? 'bg-red-900 border-red-700 text-white' : 'border-neutral-700 text-neutral-400 hover:border-red-900'}`}>[↕]</button>
-            <button onClick={() => setScaleMode('auto')} className={`px-2 py-1 text-xs border ${scaleMode === 'auto' ? 'bg-red-900 border-red-700 text-white' : 'border-neutral-700 text-neutral-400 hover:border-red-900'}`}>[Auto]</button>
             <div className="flex gap-1 ml-2 pl-2 border-l border-neutral-800">
                <button onClick={() => { setScaleMode('manual'); setCustomScale(p => Math.max(p - 0.2, 0.4)); }} className="px-2 py-1 text-xs border border-neutral-700 text-neutral-400 hover:border-red-900">[-]</button>
                <button onClick={() => { setScaleMode('manual'); setCustomScale(p => Math.min(p + 0.2, 5.0)); }} className="px-2 py-1 text-xs border border-neutral-700 text-neutral-400 hover:border-red-900">[+]</button>
@@ -741,41 +763,92 @@ export default function App() {
            </button>
         </div>
 
-        <div className="bg-neutral-900 p-6 shadow-[0_0_20px_rgba(0,0,0,0.5)] border border-neutral-800 mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 relative overflow-hidden">
-          <div className="absolute -right-6 -top-6 text-6xl opacity-5 text-amber-600 rotate-45">⚙️</div>
-          <div className="z-10">
-            <h2 className="text-2xl font-bold text-red-500 tracking-wide">
-              {currentFolder ? 'Cámara Profunda' : 'Archivo Principal'}
-            </h2>
-            <div className="flex items-center gap-2 mt-2 text-sm text-neutral-400">
-              <button onClick={() => setCurrentFolder(null)} className="hover:text-red-400 transition">Raíz</button>
-              {buildBreadcrumbs().map((crumb) => (
-                <React.Fragment key={crumb.id}>
-                  <span className="text-red-900">/</span>
-                  <button onClick={() => setCurrentFolder(crumb.id)} className="hover:text-red-400 transition truncate max-w-[100px]">{crumb.title}</button>
-                </React.Fragment>
-              ))}
+        {/* Controles de Biblioteca - Solo visibles si no estamos en Tomos Sellados */}
+        {currentTab === 'reading' && (
+          <div className="bg-neutral-900 p-6 shadow-[0_0_20px_rgba(0,0,0,0.5)] border border-neutral-800 mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 relative overflow-hidden">
+            <div className="absolute -right-6 -top-6 text-6xl opacity-5 text-amber-600 rotate-45">⚙️</div>
+            <div className="z-10">
+              <h2 className="text-2xl font-bold text-red-500 tracking-wide">
+                {currentFolder ? 'Cámara Profunda' : 'Archivo Principal'}
+              </h2>
+              <div className="flex items-center gap-2 mt-2 text-sm text-neutral-400">
+                <button onClick={() => setCurrentFolder(null)} className="hover:text-red-400 transition">Raíz</button>
+                {buildBreadcrumbs().map((crumb) => (
+                  <React.Fragment key={crumb.id}>
+                    <span className="text-red-900">/</span>
+                    <button onClick={() => setCurrentFolder(crumb.id)} className="hover:text-red-400 transition truncate max-w-[100px]">{crumb.title}</button>
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-3 z-10 w-full sm:w-auto">
+              <button onClick={() => setModalState({ isOpen: true, type: 'newFolder', item: null, inputValue: '' })} className="flex-1 sm:flex-none bg-neutral-800 border border-neutral-700 text-amber-500 hover:bg-neutral-700 hover:border-amber-600 px-4 py-2 text-sm font-bold tracking-wider uppercase transition">
+                + Carpeta
+              </button>
+              <div className="relative flex-1 sm:flex-none">
+                <input type="file" id="file-upload" className="hidden" accept=".pdf,.cbz,.cbr,.txt,.docx,.doc" onChange={handleFileUpload} disabled={isUploading}/>
+                <label htmlFor="file-upload" className={`block w-full text-center px-4 py-2 text-sm font-bold tracking-wider uppercase cursor-pointer transition border ${isUploading ? 'bg-neutral-800 border-neutral-700 text-neutral-500' : 'bg-red-950 border-red-800 text-red-200 hover:bg-red-900 hover:shadow-[0_0_10px_rgba(153,27,27,0.5)]'}`}>
+                  {isUploading ? `Alquimia... ${uploadProgress}%` : '+ Subir Archivo'}
+                </label>
+              </div>
             </div>
           </div>
-          <div className="flex gap-3 z-10 w-full sm:w-auto">
-            <button onClick={() => setModalState({ isOpen: true, type: 'newFolder', item: null, inputValue: '' })} className="flex-1 sm:flex-none bg-neutral-800 border border-neutral-700 text-amber-500 hover:bg-neutral-700 hover:border-amber-600 px-4 py-2 text-sm font-bold tracking-wider uppercase transition">
-              + Carpeta
-            </button>
-            <div className="relative flex-1 sm:flex-none">
-              <input type="file" id="file-upload" className="hidden" accept=".pdf,.cbz,.cbr,.txt,.docx,.doc" onChange={handleFileUpload} disabled={isUploading}/>
-              <label htmlFor="file-upload" className={`block w-full text-center px-4 py-2 text-sm font-bold tracking-wider uppercase cursor-pointer transition border ${isUploading ? 'bg-neutral-800 border-neutral-700 text-neutral-500' : 'bg-red-950 border-red-800 text-red-200 hover:bg-red-900 hover:shadow-[0_0_10px_rgba(153,27,27,0.5)]'}`}>
-                {isUploading ? `Alquimia... ${uploadProgress}%` : '+ Subir Archivo'}
-              </label>
-            </div>
-          </div>
-        </div>
+        )}
 
         {displayedItems.length === 0 && !isUploading ? (
           <div className="text-center py-24 bg-neutral-900 border border-dashed border-red-900/50">
             <div className="text-5xl mb-4 opacity-20 text-red-500">🕸️</div>
             <h3 className="text-lg text-neutral-500 italic">El vacío reina en esta cámara...</h3>
           </div>
+        ) : currentTab === 'finished' ? (
+          
+          /* LÓGICA DE TABLA PARA TOMOS SELLADOS */
+          <div className="bg-neutral-900 border border-neutral-800 shadow-[0_0_20px_rgba(0,0,0,0.5)] overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-neutral-950 border-b-2 border-red-900 text-amber-600 uppercase tracking-widest text-xs">
+                    <th className="p-4 w-16 text-center">No.</th>
+                    <th className="p-4 min-w-[200px]">Nombre del Tomo</th>
+                    <th className="p-4 w-48">Inicio de Lectura</th>
+                    <th className="p-4 w-48">Tomo Terminado</th>
+                    <th className="p-4 w-32 text-center">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayedItems.map((book, index) => {
+                    const startDate = book.startedAt?.toDate ? book.startedAt.toDate().toLocaleDateString() : (book.createdAt?.toDate ? book.createdAt.toDate().toLocaleDateString() : 'Desconocido');
+                    const finishDate = book.finishedAt?.toDate ? book.finishedAt.toDate().toLocaleDateString() : 'Desconocido';
+                    
+                    return (
+                      <tr key={book.id} className="border-b border-neutral-800 hover:bg-neutral-800/80 transition group">
+                        <td className="p-4 text-center font-mono text-neutral-500">{index + 1}</td>
+                        <td className="p-4">
+                          <div className="font-bold text-red-200 cursor-pointer hover:text-red-400 transition" onClick={() => openBook(book)}>
+                            {book.title}
+                          </div>
+                          <div className="text-xs text-neutral-500 font-mono mt-1">{book.size}</div>
+                        </td>
+                        <td className="p-4 font-mono text-sm text-neutral-400">{startDate}</td>
+                        <td className="p-4 font-mono text-sm text-neutral-400">{finishDate}</td>
+                        <td className="p-4">
+                          <div className="flex gap-3 justify-center opacity-50 group-hover:opacity-100 transition">
+                            <button onClick={() => setModalState({ isOpen: true, type: 'rename', item: book, inputValue: book.title })} className="text-xs text-neutral-500 hover:text-amber-400" title="Renombrar">✏️</button>
+                            <button onClick={(e) => handleDownload(book, e)} className="text-xs text-neutral-500 hover:text-green-400" title="Descargar al dispositivo">⬇️</button>
+                            <button onClick={() => setModalState({ isOpen: true, type: 'delete', item: book, inputValue: '' })} className="text-xs text-neutral-500 hover:text-red-500" title="Destruir">🔥</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          
         ) : (
+          
+          /* LÓGICA DE GRID PARA LECTURAS ACTIVAS */
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
             
             {/* CARPETAS */}
@@ -800,13 +873,6 @@ export default function App() {
                 {book.currentPage > 1 && (
                   <div className="absolute top-2 left-2 bg-red-950 border border-red-800 text-red-300 text-xs font-mono px-2 py-0.5 z-10 shadow-md">
                     Pág. {book.currentPage}
-                  </div>
-                )}
-
-                {/* Etiqueta de Finalizado */}
-                {book.status === 'finished' && (
-                  <div className="absolute top-2 right-2 bg-amber-900 border border-amber-600 text-amber-300 text-xs font-bold px-2 py-0.5 z-10 shadow-md uppercase">
-                    Sellado 🔒
                   </div>
                 )}
 
