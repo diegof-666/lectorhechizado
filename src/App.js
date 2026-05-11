@@ -10,16 +10,17 @@ const canvasAppId = typeof __app_id !== 'undefined' ? __app_id : 'lector-hechiza
 
 let firebaseConfig = {};
 
+// Configuración estricta para Create React App (Webpack evalúa esto en tiempo de compilación)
 if (isCanvas) {
   firebaseConfig = JSON.parse(__firebase_config);
-} else if (typeof process !== 'undefined' && process.env) {
+} else {
   firebaseConfig = {
-    apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "AIzaSyAbHSu9B-nfvdSYwJ5eC7lRm5thw1N0W4Q",
-    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "lector-hechizado.firebaseapp.com",
-    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "lector-hechizado",
-    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "lector-hechizado.firebasestorage.app",
-    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || "480668218490",
-    appId: process.env.REACT_APP_FIREBASE_APP_ID || "480668218490:web:e579f0bff34c7db98ab7c3"
+    apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "demo",
+    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "demo",
+    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || "demo",
+    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || "demo",
+    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || "demo",
+    appId: process.env.REACT_APP_FIREBASE_APP_ID || "demo"
   };
 }
 
@@ -83,7 +84,6 @@ export default function App() {
   
   const canvasRef = useRef(null);
   const viewerContainerRef = useRef(null);
-  const currentDomain = window.location.hostname;
 
   // Cargar motores
   useEffect(() => {
@@ -99,9 +99,8 @@ export default function App() {
     loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js');
     loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
     loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
-    // Mammoth para leer archivos DOCX y DOC
     loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
-    // Unrar para leer archivos CBR (Versión experimental en JS)
+    // Carga segura del motor UNRAR
     loadScript('https://cdn.jsdelivr.net/npm/unrar-js@0.2.1/dist/unrar.js');
   }, []);
 
@@ -154,13 +153,13 @@ export default function App() {
       else if (e.key === '+' || e.key === 'Add') {
         e.preventDefault();
         setScaleMode('manual');
-        setCustomScale(prev => Math.min(prev + 0.2, 5.0)); // Zoom máximo 5x
+        setCustomScale(prev => Math.min(prev + 0.2, 5.0));
       }
       // Zoom OUT
       else if (e.key === '-' || e.key === 'Subtract') {
         e.preventDefault();
         setScaleMode('manual');
-        setCustomScale(prev => Math.max(prev - 0.2, 0.4)); // Zoom mínimo 0.4x
+        setCustomScale(prev => Math.max(prev - 0.2, 0.4));
       }
     };
 
@@ -240,7 +239,6 @@ export default function App() {
 
     const ext = file.name.split('.').pop().toLowerCase();
     
-    // Verificación de formatos permitidos
     if (!['pdf', 'cbz', 'cbr', 'txt', 'docx', 'doc'].includes(ext)) {
       mostrarMensaje("Formato no reconocido. Usa PDF, CBZ, CBR, TXT, DOC o DOCX.");
       targetInput.value = null; return;
@@ -257,9 +255,9 @@ export default function App() {
         setIsUploading(false); targetInput.value = null; return;
       }
       
-      // Control seguro si CBR no está disponible
+      // Control seguro si CBR no está disponible o falla su carga
       if (ext === 'cbr' && typeof window.unrar === 'undefined') {
-        mostrarMensaje("⚠️ El motor UNRAR no está disponible o el navegador lo bloqueó. Por favor, convierte el archivo a .CBZ (ZIP).");
+        mostrarMensaje("⚠️ El motor UNRAR no se logró cargar correctamente. Por favor, convierte el archivo a .CBZ (ZIP) en tu computadora.");
         setIsUploading(false); targetInput.value = null; return;
       }
 
