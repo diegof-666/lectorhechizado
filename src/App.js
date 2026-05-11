@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, signInWithCustomToken, signInAnonymously } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, query, serverTimestamp, doc, updateDoc, deleteDoc } from 'firebase/firestore';
@@ -10,7 +10,6 @@ const canvasAppId = typeof __app_id !== 'undefined' ? __app_id : 'lector-hechiza
 
 let firebaseConfig = {};
 
-// Configuración estricta para Create React App
 if (isCanvas) {
   firebaseConfig = JSON.parse(__firebase_config);
 } else {
@@ -55,6 +54,59 @@ const getStorageFileRef = (uid, fileName) => {
   return ref(storage, `users/${uid}/books/${Date.now()}_${fileName}`);
 };
 
+// =========================================================================
+// COMPONENTE: PÁGINA INDIVIDUAL PARA SCROLL CONTINUO (Solo PDF)
+// =========================================================================
+const PdfContinuousPage = ({ pdfInstance, pageNum, scaleMode, customScale, readerBrightness, onVisible, containerRef }) => {
+  const canvasRef = useRef(null);
+  const wrapperRef = useRef(null);
+  const [rendered, setRendered] = useState(false);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        onVisible(pageNum);
+        if (!rendered && pdfInstance && canvasRef.current && containerRef.current) {
+          pdfInstance.getPage(pageNum).then(page => {
+            const baseViewport = page.getViewport({ scale: 1.0 });
+            let newScale = 1.2;
+            const container = containerRef.current;
+            if (scaleMode === 'fit' || scaleMode === 'auto') newScale = Math.min((container.clientWidth - 40) / baseViewport.width, (container.clientHeight - 40) / baseViewport.height);
+            else if (scaleMode === 'width') newScale = (container.clientWidth - 40) / baseViewport.width;
+            else if (scaleMode === 'height') newScale = (container.clientHeight - 40) / baseViewport.height;
+            else if (scaleMode === 'manual') newScale = customScale;
+
+            const outputScale = window.devicePixelRatio || 1;
+            const viewport = page.getViewport({ scale: newScale });
+            const canvas = canvasRef.current;
+            
+            canvas.width = Math.floor(viewport.width * outputScale);
+            canvas.height = Math.floor(viewport.height * outputScale);
+            canvas.style.width = Math.floor(viewport.width) + "px";
+            canvas.style.height = Math.floor(viewport.height) + "px";
+
+            page.render({
+              canvasContext: canvas.getContext('2d'),
+              transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null,
+              viewport: viewport
+            }).promise.then(() => setRendered(true)).catch(e => console.log(e));
+          });
+        }
+      }
+    }, { threshold: 0.2, rootMargin: "200px" });
+
+    if (wrapperRef.current) observer.observe(wrapperRef.current);
+    return () => observer.disconnect();
+  }, [pdfInstance, pageNum, rendered, scaleMode, customScale, onVisible, containerRef]);
+
+  return (
+    <div ref={wrapperRef} className="mb-6 shadow-[0_0_30px_rgba(0,0,0,0.8)] bg-white transition-all duration-200" style={{ filter: `brightness(${readerBrightness}%)`, minHeight: rendered ? 'auto' : '60vh', width: 'fit-content', margin: '0 auto 1.5rem auto' }}>
+      <canvas ref={canvasRef} className="block" />
+      {!rendered && <div className="flex items-center justify-center h-full text-neutral-400">Pág. {pageNum}...</div>}
+    </div>
+  );
+};
+
 export default function App() {
   // ESTADOS PRINCIPALES
   const [user, setUser] = useState(null);
@@ -80,6 +132,7 @@ export default function App() {
   // ESTADOS DEL VISOR DE LECTURA
   const [readingBook, setReadingBook] = useState(null);
   const [pdfInstance, setPdfInstance] = useState(null);
+  const [docContent, setDocContent] = useState(null); // Para Word y TXT nativo
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [isRendering, setIsRendering] = useState(false);
@@ -87,11 +140,12 @@ export default function App() {
   const [customScale, setCustomScale] = useState(1.2);
   const [readerBrightness, setReaderBrightness] = useState(100);
   const [showFinishModal, setShowFinishModal] = useState(false);
+  const [viewMode, setViewMode] = useState('single'); // 'single' o 'continuous'
   
   const canvasRef = useRef(null);
   const viewerContainerRef = useRef(null);
 
-  // Cargar Polyfill para Drag & Drop en dispositivos táctiles
+  // Cargar Polyfill para Drag & Drop
   useEffect(() => {
     const loadPolyfill = () => {
       const script = document.createElement('script');
@@ -159,20 +213,34 @@ export default function App() {
     };
   }, [contextMenu.show]);
 
+  // AUTO-GUARDADO DE PÁGINA (Debounce)
+  useEffect(() => {
+    if (readingBook && currentPage > 0 && currentPage !== readingBook.currentPage) {
+      const timer = setTimeout(() => {
+        updateDoc(getItemDocRef(user.uid, readingBook.id), { currentPage }).catch(()=>{});
+      }, 1500); // Guarda en la nube 1.5s después de que dejaste de mover páginas
+      return () => clearTimeout(timer);
+    }
+  }, [currentPage, readingBook, user]);
+
   // NAVEGACIÓN POR TECLADO EN EL VISOR
   useEffect(() => {
     if (!readingBook || showFinishModal) return;
     const handleKeyDown = (e) => {
-      if (isRendering) return;
+      if (isRendering && viewMode === 'single') return;
       if (e.key === 'Escape') { e.preventDefault(); closeBook(); return; }
-      else if (['ArrowRight', 'ArrowDown'].includes(e.key)) { e.preventDefault(); changePage(1); } 
+      
+      // Si estamos en modo continuo, dejamos que el navegador haga el scroll nativo
+      if (viewMode === 'continuous' && ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(e.key)) return;
+
+      if (['ArrowRight', 'ArrowDown'].includes(e.key)) { e.preventDefault(); changePage(1); } 
       else if (['ArrowLeft', 'ArrowUp'].includes(e.key)) { e.preventDefault(); changePage(-1); }
       else if (e.key === '+' || e.key === 'Add') { e.preventDefault(); setScaleMode('manual'); setCustomScale(prev => Math.min(prev + 0.2, 5.0)); }
       else if (e.key === '-' || e.key === 'Subtract') { e.preventDefault(); setScaleMode('manual'); setCustomScale(prev => Math.max(prev - 0.2, 0.4)); }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [readingBook, currentPage, totalPages, isRendering, showFinishModal]);
+  }, [readingBook, currentPage, totalPages, isRendering, showFinishModal, viewMode]);
 
   const displayedItems = allItems.filter(item => {
     if (currentTab === 'finished') return item.type !== 'folder' && item.status === 'finished';
@@ -196,72 +264,6 @@ export default function App() {
   const mostrarMensaje = (texto) => {
     setSystemMessage(texto);
     setTimeout(() => setSystemMessage(""), 6000);
-  };
-
-  // ================= FUNCIONES DE ARRASTRE (DRAG & DROP) =================
-  const handleDragStart = (e, item) => {
-    e.dataTransfer.setData('itemId', item.id);
-    setDraggedItem(item);
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    e.currentTarget.classList.add('ring-2', 'ring-amber-500', 'scale-105');
-  };
-
-  const handleDragLeave = (e) => {
-    e.currentTarget.classList.remove('ring-2', 'ring-amber-500', 'scale-105');
-  };
-
-  const handleDrop = async (e, targetFolderId) => {
-    e.preventDefault();
-    e.currentTarget.classList.remove('ring-2', 'ring-amber-500', 'scale-105');
-    if (!draggedItem) return;
-
-    if (draggedItem.type === 'folder' && targetFolderId === draggedItem.id) {
-      mostrarMensaje("No puedes introducir una cámara dentro de sí misma.");
-      setDraggedItem(null);
-      return;
-    }
-
-    if ((draggedItem.parentId || null) === targetFolderId) {
-      setDraggedItem(null);
-      return;
-    }
-
-    try {
-      await updateDoc(getItemDocRef(user.uid, draggedItem.id), { parentId: targetFolderId });
-      mostrarMensaje("Materia desplazada exitosamente.");
-    } catch (err) {
-      mostrarMensaje("Error al mover el archivo.");
-    }
-    setDraggedItem(null);
-  };
-
-  // ================= ÁRBOL DE JERARQUÍA (SIDEBAR) =================
-  const renderFolderTree = (parentId = null, depth = 0) => {
-    const folders = allItems.filter(i => i.type === 'folder' && (i.parentId || null) === parentId);
-    if (folders.length === 0) return null;
-
-    return (
-      <ul className={`pl-${depth > 0 ? '4' : '0'} mt-1 space-y-1`}>
-        {folders.map(folder => (
-          <li key={folder.id}>
-            <div 
-              className={`flex items-center gap-2 p-2 rounded cursor-pointer transition ${currentFolder === folder.id ? (isDarkMode ? 'bg-red-900/40 text-amber-500' : 'bg-amber-200 text-amber-900') : (isDarkMode ? 'hover:bg-neutral-800 text-neutral-400' : 'hover:bg-amber-100 text-neutral-700')}`}
-              onClick={() => setCurrentFolder(folder.id)}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, folder.id)}
-            >
-              <span>{currentFolder === folder.id ? '📂' : '📁'}</span>
-              <span className="truncate text-sm font-bold">{folder.title}</span>
-            </div>
-            {renderFolderTree(folder.id, depth + 1)}
-          </li>
-        ))}
-      </ul>
-    );
   };
 
   // ================= EVENTOS DE MENÚ CONTEXTUAL =================
@@ -290,6 +292,46 @@ export default function App() {
     } catch (e) { mostrarMensaje("No se pudo romper el sello."); }
   };
 
+  // ================= FUNCIONES DE ARRASTRE =================
+  const handleDragStart = (e, item) => { e.dataTransfer.setData('itemId', item.id); setDraggedItem(item); };
+  const handleDragOver = (e) => { e.preventDefault(); e.currentTarget.classList.add('ring-2', 'ring-amber-500', 'scale-105'); };
+  const handleDragLeave = (e) => { e.currentTarget.classList.remove('ring-2', 'ring-amber-500', 'scale-105'); };
+  const handleDrop = async (e, targetFolderId) => {
+    e.preventDefault(); e.currentTarget.classList.remove('ring-2', 'ring-amber-500', 'scale-105');
+    if (!draggedItem) return;
+    if (draggedItem.type === 'folder' && targetFolderId === draggedItem.id) {
+      mostrarMensaje("No puedes introducir una cámara dentro de sí misma."); setDraggedItem(null); return;
+    }
+    if ((draggedItem.parentId || null) === targetFolderId) { setDraggedItem(null); return; }
+    try {
+      await updateDoc(getItemDocRef(user.uid, draggedItem.id), { parentId: targetFolderId });
+      mostrarMensaje("Materia desplazada exitosamente.");
+    } catch (err) { mostrarMensaje("Error al mover el archivo."); }
+    setDraggedItem(null);
+  };
+
+  // ================= ÁRBOL DE JERARQUÍA =================
+  const renderFolderTree = (parentId = null, depth = 0) => {
+    const folders = allItems.filter(i => i.type === 'folder' && (i.parentId || null) === parentId);
+    if (folders.length === 0) return null;
+    return (
+      <ul className={`pl-${depth > 0 ? '4' : '0'} mt-1 space-y-1`}>
+        {folders.map(folder => (
+          <li key={folder.id}>
+            <div 
+              className={`flex items-center gap-2 p-2 rounded cursor-pointer transition ${currentFolder === folder.id ? (isDarkMode ? 'bg-red-900/40 text-amber-500' : 'bg-amber-200 text-amber-900') : (isDarkMode ? 'hover:bg-neutral-800 text-neutral-400' : 'hover:bg-amber-100 text-neutral-700')}`}
+              onClick={() => setCurrentFolder(folder.id)} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={(e) => handleDrop(e, folder.id)}
+            >
+              <span>{currentFolder === folder.id ? '📂' : '📁'}</span>
+              <span className="truncate text-sm font-bold">{folder.title}</span>
+            </div>
+            {renderFolderTree(folder.id, depth + 1)}
+          </li>
+        ))}
+      </ul>
+    );
+  };
+
   // ================= AUTENTICACIÓN Y DESCARGAS =================
   const handleLogin = async () => {
     try {
@@ -300,11 +342,7 @@ export default function App() {
     } catch (error) { mostrarMensaje("Las runas rechazan tu acceso."); }
   };
 
-  const handleLogout = async () => {
-    await signOut(auth);
-    setReadingBook(null);
-    setCurrentFolder(null);
-  };
+  const handleLogout = async () => { await signOut(auth); setReadingBook(null); setCurrentFolder(null); };
 
   const handleDownload = async (book, e) => {
     if (e) e.stopPropagation();
@@ -313,14 +351,9 @@ export default function App() {
       const response = await fetch(book.url);
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.style.display = 'none';
-      a.href = url;
-      a.download = book.title.toLowerCase().endsWith('.pdf') ? book.title : `${book.title}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      const a = document.createElement('a'); a.style.display = 'none'; a.href = url;
+      a.download = book.title.toLowerCase().endsWith(`.${book.type}`) ? book.title : `${book.title}.${book.type}`;
+      document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); document.body.removeChild(a);
       mostrarMensaje("¡Descarga completada con éxito! 📦");
     } catch (error) { mostrarMensaje("Fallo al materializar el documento."); }
   };
@@ -340,9 +373,11 @@ export default function App() {
     setIsUploading(true); setUploadProgress(0);
     let fileToUpload = file;
     let fileName = file.name;
+    let typeForDb = ext;
 
-    // Transmutaciones (CBZ, CBR, TXT, DOCX)
+    // Transmutaciones exclusivas para CóMICS (CBZ, CBR). Ya no convertimos TXT/DOCX a PDF.
     if (ext === 'cbz' || ext === 'cbr') {
+      typeForDb = 'pdf'; // Lo guardamos como PDF
       if (!window.jspdf || (!window.JSZip && ext === 'cbz')) {
         mostrarMensaje("Motores de alquimia apagados. Intenta en 5 segundos.");
         setIsUploading(false); targetInput.value = null; return;
@@ -352,7 +387,7 @@ export default function App() {
         setIsUploading(false); targetInput.value = null; return;
       }
 
-      mostrarMensaje(`Transmutando ${ext.toUpperCase()} a PDF...`);
+      mostrarMensaje(`Transmutando cómic ${ext.toUpperCase()} a PDF...`);
       try {
         let imageNames = []; let zip; let unrarData;
         if (ext === 'cbz') {
@@ -394,66 +429,42 @@ export default function App() {
         mostrarMensaje(`Fallo en la transmutación del ${ext.toUpperCase()}.`); setIsUploading(false); targetInput.value = null; return;
       }
     }
-    
-    if (ext === 'txt' || ext === 'docx' || ext === 'doc') {
-      if (!window.jspdf || ((ext === 'docx' || ext === 'doc') && !window.mammoth)) {
-        mostrarMensaje("Motores de alquimia apagados. Intenta en 5 segundos.");
-        setIsUploading(false); targetInput.value = null; return;
-      }
-      mostrarMensaje(`Transmutando pergamino ${ext.toUpperCase()} a PDF...`);
-      try {
-        let textContent = "";
-        if (ext === 'txt') textContent = await file.text();
-        else if (ext === 'docx' || ext === 'doc') {
-          const arrayBuffer = await file.arrayBuffer();
-          textContent = (await window.mammoth.extractRawText({ arrayBuffer })).value || "Error.";
-        }
-        const { jsPDF } = window.jspdf;
-        const pdfDoc = new jsPDF('p', 'pt', 'a4');
-        const margin = 40;
-        const lines = pdfDoc.splitTextToSize(textContent, pdfDoc.internal.pageSize.getWidth() - margin * 2);
-        let cursorY = margin;
-        for(let i = 0; i < lines.length; i++) {
-           if (cursorY > pdfDoc.internal.pageSize.getHeight() - margin) { pdfDoc.addPage(); cursorY = margin; }
-           pdfDoc.text(lines[i], margin, cursorY);
-           cursorY += 14; 
-           setUploadProgress(Math.floor((i / lines.length) * 40));
-        }
-        fileToUpload = pdfDoc.output('blob');
-        fileName = file.name.replace(new RegExp(`\\.${ext}$`, 'i'), '.pdf');
-      } catch(e) { mostrarMensaje("Fallo al escribir las runas de texto."); setIsUploading(false); targetInput.value = null; return; }
-    }
 
-    // Generar Miniatura (Portada)
+    // Generar Miniatura (Portada) solo si es PDF (incluyendo los que acaban de ser transmutados)
     let thumbBlob = null;
-    try {
-      mostrarMensaje("Extrayendo la portada para el archivo...");
-      const url = URL.createObjectURL(fileToUpload);
-      const pdf = await window.pdfjsLib.getDocument(url).promise;
-      const page = await pdf.getPage(1);
-      const viewport = page.getViewport({ scale: 0.5 });
-      const outputScale = window.devicePixelRatio || 1;
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.floor(viewport.width * outputScale);
-      canvas.height = Math.floor(viewport.height * outputScale);
-      const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
-      await page.render({ canvasContext: canvas.getContext('2d'), transform: transform, viewport: viewport }).promise;
-      thumbBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8));
-      URL.revokeObjectURL(url);
-    } catch(e) { console.error("Sin miniatura", e); }
+    if (typeForDb === 'pdf') {
+      try {
+        mostrarMensaje("Extrayendo la portada para el archivo...");
+        const url = URL.createObjectURL(fileToUpload);
+        const pdf = await window.pdfjsLib.getDocument(url).promise;
+        const page = await pdf.getPage(1);
+        const viewport = page.getViewport({ scale: 0.5 });
+        const outputScale = window.devicePixelRatio || 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+        await page.render({ canvasContext: canvas.getContext('2d'), transform: transform, viewport: viewport }).promise;
+        thumbBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8));
+        URL.revokeObjectURL(url);
+      } catch(e) { console.error("Sin miniatura", e); }
+    } else {
+      mostrarMensaje(`Almacenando pergamino ${ext.toUpperCase()} original...`);
+      setUploadProgress(50); // Simular progreso para archivos nativos
+    }
 
     // Proceso de Subida Final
     const storagePath = `users/${user.uid}/books/${Date.now()}_${fileName}`;
     const storageRef = getStorageFileRef(user.uid, fileName);
 
     if (isCanvas) {
-      let prog = (ext !== 'pdf') ? 40 : 0;
+      let prog = 40;
       const interval = setInterval(() => {
         prog += 10; setUploadProgress(prog);
         if (prog >= 100) {
           clearInterval(interval);
           addDoc(getItemsRef(user.uid), {
-            title: fileName, url: URL.createObjectURL(fileToUpload), type: 'pdf', parentId: currentFolder, storagePath,
+            title: fileName, url: URL.createObjectURL(fileToUpload), type: typeForDb, parentId: currentFolder, storagePath,
             thumbnailUrl: thumbBlob ? URL.createObjectURL(thumbBlob) : null, thumbStoragePath: null, createdAt: serverTimestamp(),
             size: (fileToUpload.size / 1024 / 1024).toFixed(2) + ' MB', currentPage: 1, status: 'reading'
           }).then(() => { setIsUploading(false); mostrarMensaje("Grimorio almacenado."); targetInput.value = null; });
@@ -465,7 +476,7 @@ export default function App() {
     const uploadTask = uploadBytesResumable(storageRef, fileToUpload);
     uploadTask.on('state_changed',
       (snapshot) => {
-        const base = (ext !== 'pdf') ? 40 : 0; const multiplier = (ext !== 'pdf') ? 0.6 : 1;
+        const base = (typeForDb !== 'pdf') ? 40 : 0; const multiplier = (typeForDb !== 'pdf') ? 0.6 : 1;
         setUploadProgress((base + ((snapshot.bytesTransferred / snapshot.totalBytes) * 100 * multiplier)).toFixed(0));
       },
       () => { mostrarMensaje("La transferencia ha fallado."); setIsUploading(false); },
@@ -480,7 +491,7 @@ export default function App() {
             thumbStoragePath = thumbStorageRef.fullPath;
           }
           await addDoc(getItemsRef(user.uid), {
-            title: fileName, url: downloadURL, type: 'pdf', parentId: currentFolder, storagePath: storageRef.fullPath, 
+            title: fileName, url: downloadURL, type: typeForDb, parentId: currentFolder, storagePath: storageRef.fullPath, 
             thumbnailUrl: thumbDownloadURL, thumbStoragePath, createdAt: serverTimestamp(), size: (fileToUpload.size / 1024 / 1024).toFixed(2) + ' MB', currentPage: 1, status: 'reading'
           });
           setIsUploading(false); mostrarMensaje("Grimorio materializado con éxito."); targetInput.value = null;
@@ -489,7 +500,7 @@ export default function App() {
     );
   };
 
-  // ================= ACCIONES DE CARPETA =================
+  // ================= MÁS ACCIONES =================
   const handleCreateFolder = async () => {
     if (!modalState.inputValue.trim()) return;
     try {
@@ -550,20 +561,40 @@ export default function App() {
     setInlineFolderInput("");
   };
 
-  // ================= SISTEMA DE LECTURA =================
+  // ================= SISTEMA DE LECTURA (Nativo + PDF) =================
   const openBook = async (book) => {
     setReadingBook(book); setCurrentPage(book.currentPage || 1); setTotalPages(0);
-    setPdfInstance(null); setScaleMode('fit'); setCustomScale(1.2); setReaderBrightness(100); setShowFinishModal(false);
+    setPdfInstance(null); setDocContent(null); setScaleMode('fit'); setCustomScale(1.2); setReaderBrightness(100); setShowFinishModal(false);
+    
     if (!book.startedAt) try { await updateDoc(getItemDocRef(user.uid, book.id), { startedAt: serverTimestamp() }); } catch(e) {}
-    if (window.pdfjsLib) {
-      window.pdfjsLib.getDocument(book.url).promise.then(pdf => {
-        setPdfInstance(pdf); setTotalPages(pdf.numPages);
-      }).catch(() => { mostrarMensaje("Sellos corruptos."); setReadingBook(null); });
-    } else { mostrarMensaje("Motores apagados."); setReadingBook(null); }
+    
+    if (book.type === 'pdf' || !book.type) { // Retrocompatibilidad: Si no tiene tipo, asumimos PDF
+      if (window.pdfjsLib) {
+        window.pdfjsLib.getDocument(book.url).promise.then(pdf => {
+          setPdfInstance(pdf); setTotalPages(pdf.numPages);
+        }).catch(() => { mostrarMensaje("Sellos corruptos."); setReadingBook(null); });
+      } else { mostrarMensaje("Motores apagados."); setReadingBook(null); }
+    } else if (book.type === 'docx' || book.type === 'doc') {
+      try {
+        const response = await fetch(book.url);
+        const arrayBuffer = await response.arrayBuffer();
+        const result = await window.mammoth.convertToHtml({ arrayBuffer });
+        setDocContent(result.value);
+        setTotalPages(1); // Documentos nativos son 1 página larga en web
+      } catch(e) { mostrarMensaje("No se pudo descifrar el pergamino Word."); setReadingBook(null); }
+    } else if (book.type === 'txt') {
+      try {
+        const response = await fetch(book.url);
+        const text = await response.text();
+        setDocContent(text);
+        setTotalPages(1);
+      } catch(e) { mostrarMensaje("No se pudo descifrar el pergamino de texto."); setReadingBook(null); }
+    }
   };
 
+  // EFECTO PRINCIPAL DE RENDERIZADO DEL PDF (Solo para Modo de 1 Hoja)
   useEffect(() => {
-    if (pdfInstance && readingBook && canvasRef.current && viewerContainerRef.current) {
+    if (pdfInstance && readingBook && viewMode === 'single' && canvasRef.current && viewerContainerRef.current) {
       setIsRendering(true);
       pdfInstance.getPage(currentPage).then(page => {
         const baseViewport = page.getViewport({ scale: 1.0 });
@@ -586,19 +617,24 @@ export default function App() {
             .promise.then(() => setIsRendering(false)).catch(() => setIsRendering(false));
       });
     }
-  }, [pdfInstance, currentPage, readingBook, scaleMode, customScale]);
+  }, [pdfInstance, currentPage, readingBook, scaleMode, customScale, viewMode]);
 
   const changePage = async (delta) => {
-    if (isRendering) return;
+    if (isRendering && viewMode === 'single') return;
     const newPage = currentPage + delta;
-    if (newPage > totalPages) return setShowFinishModal(true);
+    if (newPage > totalPages && readingBook.type === 'pdf') return setShowFinishModal(true);
     if (newPage > 0 && newPage <= totalPages) {
       setCurrentPage(newPage);
-      try { await updateDoc(getItemDocRef(user.uid, readingBook.id), { currentPage: newPage }); } catch (e) {}
+      // El guardado ahora se maneja automáticamente por el useEffect debounce
     }
   };
 
-  const closeBook = () => { setReadingBook(null); setPdfInstance(null); setShowFinishModal(false); };
+  // CALLBACK OPTIMIZADO PARA ACTUALIZAR LA PÁGINA ACTUAL DURANTE EL SCROLL CONTINUO
+  const handleContinuousPageVisible = useCallback((pageNum) => {
+    setCurrentPage(pageNum);
+  }, []);
+
+  const closeBook = () => { setReadingBook(null); setPdfInstance(null); setDocContent(null); setShowFinishModal(false); };
 
   // ================= VARIABLES DE TEMA DINÁMICO =================
   const tBgMain = isDarkMode ? 'bg-neutral-950' : 'bg-[#fdf6e3]';
@@ -630,10 +666,23 @@ export default function App() {
     );
   }
 
+  // INTERFAZ DE LECTURA (VISOR DE LIBROS)
   if (readingBook) {
     return (
       <div className={`min-h-screen ${tBgMain} flex flex-col items-center justify-start ${tTextMain} font-serif overflow-hidden fixed inset-0 z-40 transition-colors duration-300`}>
-        <style>{`@font-face { font-family: 'DeadlySins'; src: url('/DeadlySins.ttf') format('truetype'); font-display: swap; } .font-deadly { font-family: 'DeadlySins', serif; }`}</style>
+        
+        {/* Estilos dinámicos para los documentos de Word (Modo Nativo) */}
+        <style>{`
+          @font-face { font-family: 'DeadlySins'; src: url('/DeadlySins.ttf') format('truetype'); font-display: swap; } 
+          .font-deadly { font-family: 'DeadlySins', serif; }
+          .docx-viewer { line-height: 1.6; font-family: sans-serif; color: #111; }
+          .docx-viewer h1 { font-size: 2em; font-weight: bold; margin-bottom: 0.5em; border-bottom: 2px solid #ddd; padding-bottom: 0.3em; }
+          .docx-viewer h2 { font-size: 1.5em; font-weight: bold; margin-bottom: 0.5em; }
+          .docx-viewer p { margin-bottom: 1em; }
+          .docx-viewer img { max-width: 100%; height: auto; margin: 1em 0; border-radius: 4px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .docx-viewer table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
+          .docx-viewer th, .docx-viewer td { border: 1px solid #ccc; padding: 8px; }
+        `}</style>
         
         <div className={`w-full ${tHeaderBg} p-3 shadow-lg flex flex-wrap justify-between items-center border-b z-20 shrink-0 gap-2`}>
           <button onClick={closeBook} className={`text-red-500 hover:text-red-400 px-3 py-1 font-bold transition uppercase tracking-wider text-xs sm:text-sm border border-transparent ${isDarkMode ? 'hover:border-red-900' : 'hover:border-red-300'} rounded z-30`}>
@@ -647,6 +696,13 @@ export default function App() {
               <span className="text-xs text-amber-500">☀️</span>
             </div>
 
+            {/* Alternador de Modo de Vista (Solo útil en PDFs) */}
+            {(readingBook.type === 'pdf' || !readingBook.type) && (
+              <button onClick={() => setViewMode(v => v === 'single' ? 'continuous' : 'single')} className={`px-2 py-1 text-xs border ${tBorder} ${tTextMain} ${tBorderHover} rounded hidden sm:block`} title="Cambiar modo de lectura">
+                {viewMode === 'single' ? '📄 Hoja por Hoja' : '📜 Scroll Continuo'}
+              </button>
+            )}
+
             <button onClick={() => setScaleMode('fit')} className={`px-2 py-1 text-xs border ${scaleMode === 'fit' ? 'bg-red-900 border-red-700 text-white' : `${tBorder} ${tTextMain} ${tBorderHover}`}`}>[Ajustar]</button>
             <button onClick={() => setScaleMode('width')} className={`px-2 py-1 text-xs border ${scaleMode === 'width' ? 'bg-red-900 border-red-700 text-white' : `${tBorder} ${tTextMain} ${tBorderHover}`}`}>[↔]</button>
             <button onClick={() => setScaleMode('height')} className={`px-2 py-1 text-xs border ${scaleMode === 'height' ? 'bg-red-900 border-red-700 text-white' : `${tBorder} ${tTextMain} ${tBorderHover}`}`}>[↕]</button>
@@ -656,23 +712,67 @@ export default function App() {
             </div>
           </div>
 
-          <div className={`text-sm font-mono text-amber-600 font-bold ${tBgMain} px-3 py-1 rounded border ${tBorder} z-30`}>
+          <div className={`text-sm font-mono text-amber-600 font-bold ${tBgMain} px-3 py-1 rounded border ${tBorder} z-30 flex items-center gap-3`}>
             {totalPages > 0 ? `Pág. ${currentPage} / ${totalPages}` : 'Cargando...'}
+            {(readingBook.type === 'docx' || readingBook.type === 'txt') && (
+               <button onClick={() => setShowFinishModal(true)} className="text-xs bg-red-900 text-white px-2 rounded hover:bg-red-800">Finalizar</button>
+            )}
           </div>
         </div>
 
         <div className="flex-grow w-full overflow-hidden flex flex-col relative">
-          <div className={`flex-grow w-full overflow-auto flex justify-center items-center ${isDarkMode ? 'bg-[#0d0d0d]' : 'bg-[#e5dfd3]'} p-4 relative`} ref={viewerContainerRef}>
-            <div className="absolute inset-y-0 left-0 w-1/4 z-10 cursor-w-resize" onClick={() => changePage(-1)} title="Página Anterior"></div>
-            <div className="absolute inset-y-0 right-0 w-1/4 z-10 cursor-e-resize" onClick={() => changePage(1)} title="Página Siguiente"></div>
-
-            {!pdfInstance && (
-              <div className="absolute inset-0 flex items-center justify-center text-red-800 animate-pulse font-bold tracking-widest uppercase">
-                Alineando engranajes... ⚙️
+          
+          <div className={`flex-grow w-full overflow-auto flex ${viewMode === 'single' && (readingBook.type === 'pdf' || !readingBook.type) ? 'justify-center items-center' : 'justify-center items-start pt-8'} ${isDarkMode ? 'bg-[#0d0d0d]' : 'bg-[#e5dfd3]'} relative`} ref={viewerContainerRef}>
+            
+            {/* Si es PDF y está en modo Hoja por Hoja */}
+            {(readingBook.type === 'pdf' || !readingBook.type) && viewMode === 'single' ? (
+              <>
+                <div className="absolute inset-y-0 left-0 w-1/4 z-10 cursor-w-resize" onClick={() => changePage(-1)} title="Página Anterior"></div>
+                <div className="absolute inset-y-0 right-0 w-1/4 z-10 cursor-e-resize" onClick={() => changePage(1)} title="Página Siguiente"></div>
+                {!pdfInstance && <div className="absolute inset-0 flex items-center justify-center text-red-800 animate-pulse font-bold tracking-widest uppercase">Alineando engranajes... ⚙️</div>}
+                <canvas ref={canvasRef} className="shadow-[0_0_30px_rgba(0,0,0,0.8)] bg-white transition-all duration-200 z-0" style={{ display: pdfInstance ? 'block' : 'none', filter: `brightness(${readerBrightness}%)` }}></canvas>
+              </>
+            ) : 
+            
+            /* Si es PDF y está en modo Scroll Continuo */
+            (readingBook.type === 'pdf' || !readingBook.type) && viewMode === 'continuous' ? (
+              <div className="flex flex-col items-center w-full pb-32">
+                {!pdfInstance && <div className="text-red-800 animate-pulse font-bold tracking-widest uppercase mt-32">Alineando engranajes... ⚙️</div>}
+                {pdfInstance && Array.from({ length: totalPages }, (_, i) => (
+                  <PdfContinuousPage 
+                    key={`page-${i+1}`} 
+                    pdfInstance={pdfInstance} 
+                    pageNum={i + 1} 
+                    scaleMode={scaleMode} 
+                    customScale={customScale} 
+                    readerBrightness={readerBrightness} 
+                    onVisible={handleContinuousPageVisible}
+                    containerRef={viewerContainerRef}
+                  />
+                ))}
+                {pdfInstance && (
+                  <button onClick={() => setShowFinishModal(true)} className="mt-8 mb-16 px-8 py-3 bg-red-900 text-white font-bold tracking-widest uppercase rounded shadow-[0_0_15px_rgba(153,27,27,0.8)] hover:bg-red-800 transition">
+                    Terminar Tomo
+                  </button>
+                )}
+              </div>
+            ) : 
+            
+            /* Si es un archivo Nativo (Word/TXT) */
+            (readingBook.type === 'txt') ? (
+              <div className="w-full px-4 flex justify-center pb-16">
+                 <pre className="bg-[#fcfcfc] text-[#111] p-6 sm:p-10 shadow-xl max-w-4xl w-full whitespace-pre-wrap font-sans text-sm sm:text-base md:text-lg rounded" style={{ filter: `brightness(${readerBrightness}%)` }}>
+                   {docContent || "Descifrando runas..."}
+                 </pre>
+              </div>
+            ) : (
+              <div className="w-full px-4 flex justify-center pb-16">
+                 <div className="bg-[#fcfcfc] docx-viewer p-6 sm:p-10 shadow-xl max-w-4xl w-full rounded" style={{ filter: `brightness(${readerBrightness}%)` }} dangerouslySetInnerHTML={{ __html: docContent || "<p class='text-center text-red-500 font-bold'>Descifrando runas...</p>" }} />
               </div>
             )}
-            <canvas ref={canvasRef} className="shadow-[0_0_30px_rgba(0,0,0,0.8)] bg-white transition-all duration-200 z-0" style={{ display: pdfInstance ? 'block' : 'none', filter: `brightness(${readerBrightness}%)` }}></canvas>
           </div>
+
+          {/* Barra de progreso inferior */}
           <div className={`w-full ${tHeaderBg} h-1.5 z-20`}>
             <div className="bg-red-600 h-full transition-all duration-300 shadow-[0_0_10px_rgba(220,38,38,1)]" style={{ width: `${totalPages > 0 ? (currentPage / totalPages) * 100 : 0}%` }}></div>
           </div>
@@ -699,6 +799,7 @@ export default function App() {
     );
   }
 
+  // ================= RENDERIZADO PRINCIPAL (BIBLIOTECA) =================
   return (
     <div className={`min-h-screen ${tBgMain} ${tTextMain} font-serif pb-10 transition-colors duration-300`}>
       <style>{`@font-face { font-family: 'DeadlySins'; src: url('/DeadlySins.ttf') format('truetype'); font-display: swap; } .font-deadly { font-family: 'DeadlySins', serif; }`}</style>
@@ -912,7 +1013,7 @@ export default function App() {
                         <img src={book.thumbnailUrl} alt="Portada" className={`w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition duration-500 pointer-events-none ${isFinished && !isDarkMode ? 'mix-blend-multiply' : ''}`} />
                       ) : (
                         <div className={`text-6xl ${isFinished ? 'text-amber-700 group-hover:text-amber-500' : 'text-red-800 group-hover:text-red-600'} group-hover:scale-110 transition duration-500`}>
-                          {book.type === 'pdf' ? '📜' : '🎞️'}
+                          {book.type === 'pdf' || !book.type ? '📜' : '📝'}
                         </div>
                       )}
                       <div className={`absolute inset-0 ${isFinished ? 'bg-amber-900/10' : 'bg-red-900/10'} opacity-0 group-hover:opacity-100 transition duration-300`}></div>
@@ -923,7 +1024,7 @@ export default function App() {
                         {book.title}
                       </h3>
                       <div className="text-xs text-neutral-500 font-mono">
-                        {book.size} • {book.type.toUpperCase()}
+                        {book.size} • {(book.type || 'PDF').toUpperCase()}
                       </div>
                     </div>
                   </div>
