@@ -189,10 +189,9 @@ export default function App() {
     }
     
     // Si estamos en Lecturas Activas, mantenemos el sistema de navegación por carpetas
+    // Ahora, los libros finalizados TAMBIÉN se muestran en la biblioteca dentro de sus carpetas
     if ((item.parentId || null) !== currentFolder) return false;
-    if (item.type === 'folder') return true;
-    const status = item.status || 'reading';
-    return status === 'reading';
+    return true; 
   });
 
   const buildBreadcrumbs = () => {
@@ -803,11 +802,11 @@ export default function App() {
             <button onClick={(e) => { handleDownload(contextMenu.item, e); setContextMenu({show: false}); }} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-green-400">⬇️ Descargar</button>
           )}
 
-          {contextMenu.item.type !== 'folder' && currentTab === 'reading' && (
+          {contextMenu.item.type !== 'folder' && contextMenu.item.status !== 'finished' && (
             <button onClick={() => handleMarkAsSealed(contextMenu.item)} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-amber-500 font-bold">🔒 Marcar como Sellado</button>
           )}
 
-          {contextMenu.item.type !== 'folder' && currentTab === 'finished' && (
+          {contextMenu.item.type !== 'folder' && contextMenu.item.status === 'finished' && (
             <button onClick={() => handleUnseal(contextMenu.item)} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-amber-500 font-bold">📖 Quitar Sello</button>
           )}
 
@@ -935,7 +934,7 @@ export default function App() {
           
         ) : (
           
-          /* LÓGICA DE GRID PARA LECTURAS ACTIVAS */
+          /* LÓGICA DE GRID PARA LECTURAS ACTIVAS Y FINALIZADAS EN CARPETAS */
           <div>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
               
@@ -955,35 +954,45 @@ export default function App() {
                 </div>
               ))}
 
-              {/* ARCHIVOS (Con portadas generadas dinámicamente) */}
-              {displayedItems.filter(i => i.type !== 'folder').map((book) => (
+              {/* ARCHIVOS (Con portadas generadas dinámicamente y estilos para finalizados) */}
+              {displayedItems.filter(i => i.type !== 'folder').map((book) => {
+                const isFinished = book.status === 'finished';
+                
+                return (
                 <div 
                   key={book.id} 
-                  className="bg-neutral-900 border border-neutral-800 hover:border-red-900 transition flex flex-col relative group shadow-lg select-none cursor-pointer"
+                  className={`bg-neutral-900 border ${isFinished ? 'border-amber-900/40 opacity-75 hover:opacity-100 grayscale-[30%]' : 'border-neutral-800 hover:border-red-900'} transition flex flex-col relative group shadow-lg select-none cursor-pointer`}
                   onContextMenu={(e) => handleContextMenu(e, book)}
                 >
                   <div className="absolute top-2 right-2 z-10 text-neutral-400 bg-black/50 rounded-full w-6 h-6 flex items-center justify-center opacity-0 group-hover:opacity-100 transition" title="Clic derecho para opciones">⋮</div>
                   
-                  {book.currentPage > 1 && (
+                  {book.currentPage > 1 && !isFinished && (
                     <div className="absolute top-2 left-2 bg-red-950 border border-red-800 text-red-300 text-xs font-mono px-2 py-0.5 z-10 shadow-md">
                       Pág. {book.currentPage}
                     </div>
                   )}
 
-                  {/* Previsualización del documento */}
-                  <div className="h-48 bg-[#050505] flex items-center justify-center border-b border-neutral-800 overflow-hidden relative" onClick={() => openBook(book)}>
+                  {/* Etiqueta de Finalizado en la vista de Cuadrícula */}
+                  {isFinished && (
+                    <div className="absolute top-2 left-2 bg-amber-950 border border-amber-700 text-amber-400 text-xs font-bold px-2 py-0.5 z-10 shadow-md uppercase backdrop-blur-sm">
+                      Sellado 🔒
+                    </div>
+                  )}
+
+                  {/* Previsualización del documento con sombreado */}
+                  <div className={`h-48 bg-[#050505] flex items-center justify-center border-b ${isFinished ? 'border-amber-900/30' : 'border-neutral-800'} overflow-hidden relative`} onClick={() => openBook(book)}>
                     {book.thumbnailUrl ? (
                       <img src={book.thumbnailUrl} alt="Portada" className="w-full h-full object-cover opacity-70 group-hover:opacity-100 group-hover:scale-105 transition duration-500 pointer-events-none" />
                     ) : (
-                      <div className="text-6xl text-red-900 group-hover:scale-110 group-hover:text-red-700 transition duration-500">
+                      <div className={`text-6xl ${isFinished ? 'text-amber-800 group-hover:text-amber-600' : 'text-red-900 group-hover:text-red-700'} group-hover:scale-110 transition duration-500`}>
                         {book.type === 'pdf' ? '📜' : '🎞️'}
                       </div>
                     )}
-                    <div className="absolute inset-0 bg-red-900/20 opacity-0 group-hover:opacity-100 transition duration-300"></div>
+                    <div className={`absolute inset-0 ${isFinished ? 'bg-amber-900/10' : 'bg-red-900/20'} opacity-0 group-hover:opacity-100 transition duration-300`}></div>
                   </div>
                   
                   <div className="p-4 flex flex-col flex-grow" onClick={() => openBook(book)}>
-                    <h3 className="font-bold text-red-200 line-clamp-2 leading-snug mb-1" title={book.title}>
+                    <h3 className={`font-bold ${isFinished ? 'text-amber-500' : 'text-red-200'} line-clamp-2 leading-snug mb-1`} title={book.title}>
                       {book.title}
                     </h3>
                     <div className="text-xs text-neutral-500 font-mono">
@@ -991,7 +1000,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
             
             <div className="mt-8 text-center text-[11px] text-neutral-500 uppercase tracking-widest">
