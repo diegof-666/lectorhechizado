@@ -67,9 +67,10 @@ export default function App() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [systemMessage, setSystemMessage] = useState("");
   
-  // ESTADOS DE MODALES
+  // ESTADOS DE MODALES Y MENÚ CONTEXTUAL
   const [modalState, setModalState] = useState({ isOpen: false, type: '', item: null, inputValue: '' });
   const [inlineFolderInput, setInlineFolderInput] = useState("");
+  const [contextMenu, setContextMenu] = useState({ show: false, x: 0, y: 0, item: null });
   
   // ESTADOS DEL VISOR DE LECTURA
   const [readingBook, setReadingBook] = useState(null);
@@ -125,6 +126,19 @@ export default function App() {
     });
     return () => unsubscribe();
   }, [user]);
+
+  // CERRAR MENÚ CONTEXTUAL AL HACER CLIC FUERA
+  useEffect(() => {
+    const handleClickOutside = () => {
+      if (contextMenu.show) setContextMenu({ show: false, x: 0, y: 0, item: null });
+    };
+    window.addEventListener('click', handleClickOutside);
+    window.addEventListener('scroll', handleClickOutside, { passive: true });
+    return () => {
+      window.removeEventListener('click', handleClickOutside);
+      window.removeEventListener('scroll', handleClickOutside);
+    };
+  }, [contextMenu.show]);
 
   // NAVEGACIÓN POR TECLADO EN EL VISOR
   useEffect(() => {
@@ -199,6 +213,43 @@ export default function App() {
     setTimeout(() => setSystemMessage(""), 6000);
   };
 
+  // ================= EVENTOS DE MENÚ CONTEXTUAL (CLIC DERECHO / PRESIÓN LARGA) =================
+  const handleContextMenu = (e, item) => {
+    e.preventDefault(); // Evita el menú nativo del navegador
+    
+    // Calcular posición para que no se salga de la pantalla
+    let x = e.pageX;
+    let y = e.pageY;
+    if (x > window.innerWidth - 200) x -= 200;
+    if (y > window.innerHeight - 300) y -= 300;
+
+    setContextMenu({ show: true, x, y, item });
+  };
+
+  const handleMarkAsSealed = async (item) => {
+    try {
+      await updateDoc(getItemDocRef(user.uid, item.id), { 
+        status: 'finished', 
+        finishedAt: serverTimestamp() 
+      });
+      mostrarMensaje("Tomo sellado y enviado al archivo.");
+      setContextMenu({ show: false, x: 0, y: 0, item: null });
+    } catch (e) {
+      mostrarMensaje("Fallo al sellar el documento.");
+    }
+  };
+
+  const handleUnseal = async (item) => {
+    try {
+      await updateDoc(getItemDocRef(user.uid, item.id), { status: 'reading' });
+      mostrarMensaje("Sello roto. El tomo vuelve a estar activo.");
+      setContextMenu({ show: false, x: 0, y: 0, item: null });
+    } catch (e) {
+      mostrarMensaje("No se pudo romper el sello.");
+    }
+  };
+
+
   // ================= AUTENTICACIÓN Y DESCARGAS =================
   const handleLogin = async () => {
     try {
@@ -218,7 +269,7 @@ export default function App() {
   };
 
   const handleDownload = async (book, e) => {
-    e.stopPropagation();
+    if (e) e.stopPropagation();
     try {
       mostrarMensaje("Canalizando el pergamino a tu dispositivo...");
       const response = await fetch(book.url);
@@ -736,11 +787,45 @@ export default function App() {
         </div>
       )}
 
-      <nav className="bg-neutral-900 shadow-md border-b-2 border-red-900 sticky top-0 z-40">
+      {/* MENÚ CONTEXTUAL FLOTANTE */}
+      {contextMenu.show && contextMenu.item && (
+        <div 
+          className="fixed z-50 bg-neutral-900 border border-red-900 shadow-[0_0_15px_rgba(150,0,0,0.5)] rounded py-2 w-48 text-sm font-sans"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+        >
+          <div className="px-4 py-1 text-xs text-amber-600 font-bold border-b border-neutral-800 mb-1 truncate">
+            {contextMenu.item.title}
+          </div>
+          <button onClick={() => { setModalState({ isOpen: true, type: 'rename', item: contextMenu.item, inputValue: contextMenu.item.title }); setContextMenu({show: false}); }} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-amber-400">✏️ Renombrar</button>
+          <button onClick={() => { setModalState({ isOpen: true, type: 'move', item: contextMenu.item, inputValue: '' }); setContextMenu({show: false}); }} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-indigo-400">📦 Mover</button>
+          
+          {contextMenu.item.type !== 'folder' && (
+            <button onClick={(e) => { handleDownload(contextMenu.item, e); setContextMenu({show: false}); }} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-green-400">⬇️ Descargar</button>
+          )}
+
+          {contextMenu.item.type !== 'folder' && currentTab === 'reading' && (
+            <button onClick={() => handleMarkAsSealed(contextMenu.item)} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-amber-500 font-bold">🔒 Marcar como Sellado</button>
+          )}
+
+          {contextMenu.item.type !== 'folder' && currentTab === 'finished' && (
+            <button onClick={() => handleUnseal(contextMenu.item)} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-amber-500 font-bold">📖 Quitar Sello</button>
+          )}
+
+          <div className="border-t border-neutral-800 mt-1 pt-1">
+            <button onClick={() => { setModalState({ isOpen: true, type: 'delete', item: contextMenu.item, inputValue: '' }); setContextMenu({show: false}); }} className="w-full text-left px-4 py-2 text-neutral-300 hover:bg-neutral-800 hover:text-red-500">🔥 Destruir</button>
+          </div>
+        </div>
+      )}
+
+      <nav className="bg-neutral-900 shadow-md border-b-2 border-red-900 sticky top-0 z-30">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl text-amber-600">⚙️</span>
-            <h1 className="text-xl font-bold text-red-600 tracking-widest uppercase">Lector Hechizado</h1>
+          <div 
+            className="flex items-center gap-3 cursor-pointer group"
+            onClick={() => { setCurrentFolder(null); setCurrentTab('reading'); }}
+            title="Volver a la Raíz"
+          >
+            <span className="text-2xl text-amber-600 group-hover:rotate-45 transition duration-500">⚙️</span>
+            <h1 className="text-xl font-bold text-red-600 tracking-widest uppercase group-hover:text-red-500 transition">Lector Hechizado</h1>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-neutral-400 italic hidden sm:block">Archivista en turno</span>
@@ -812,7 +897,6 @@ export default function App() {
                     <th className="p-4 min-w-[200px]">Nombre del Tomo</th>
                     <th className="p-4 w-48">Inicio de Lectura</th>
                     <th className="p-4 w-48">Tomo Terminado</th>
-                    <th className="p-4 w-32 text-center">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -821,8 +905,15 @@ export default function App() {
                     const finishDate = book.finishedAt?.toDate ? book.finishedAt.toDate().toLocaleDateString() : 'Desconocido';
                     
                     return (
-                      <tr key={book.id} className="border-b border-neutral-800 hover:bg-neutral-800/80 transition group">
-                        <td className="p-4 text-center font-mono text-neutral-500">{index + 1}</td>
+                      <tr 
+                        key={book.id} 
+                        className="border-b border-neutral-800 hover:bg-neutral-800/80 transition group select-none cursor-pointer"
+                        onContextMenu={(e) => handleContextMenu(e, book)}
+                      >
+                        <td className="p-4 text-center font-mono text-neutral-500 relative">
+                          <span className="group-hover:hidden">{index + 1}</span>
+                          <span className="hidden group-hover:inline-block text-amber-500" title="Clic derecho para opciones">⋮</span>
+                        </td>
                         <td className="p-4">
                           <div className="font-bold text-red-200 cursor-pointer hover:text-red-400 transition" onClick={() => openBook(book)}>
                             {book.title}
@@ -831,85 +922,86 @@ export default function App() {
                         </td>
                         <td className="p-4 font-mono text-sm text-neutral-400">{startDate}</td>
                         <td className="p-4 font-mono text-sm text-neutral-400">{finishDate}</td>
-                        <td className="p-4">
-                          <div className="flex gap-3 justify-center opacity-50 group-hover:opacity-100 transition">
-                            <button onClick={() => setModalState({ isOpen: true, type: 'rename', item: book, inputValue: book.title })} className="text-xs text-neutral-500 hover:text-amber-400" title="Renombrar">✏️</button>
-                            <button onClick={(e) => handleDownload(book, e)} className="text-xs text-neutral-500 hover:text-green-400" title="Descargar al dispositivo">⬇️</button>
-                            <button onClick={() => setModalState({ isOpen: true, type: 'delete', item: book, inputValue: '' })} className="text-xs text-neutral-500 hover:text-red-500" title="Destruir">🔥</button>
-                          </div>
-                        </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
+              <div className="p-3 text-center text-[10px] text-neutral-500 uppercase tracking-widest bg-neutral-950">
+                Clic derecho / Dejar presionado sobre un libro para abrir el menú de opciones
+              </div>
             </div>
           </div>
           
         ) : (
           
           /* LÓGICA DE GRID PARA LECTURAS ACTIVAS */
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-            
-            {/* CARPETAS */}
-            {displayedItems.filter(i => i.type === 'folder').map(folder => (
-              <div key={folder.id} className="bg-neutral-900 border border-neutral-800 hover:border-amber-700/50 p-4 flex flex-col group transition shadow-lg">
-                <div className="flex items-center gap-3 cursor-pointer mb-4" onClick={() => setCurrentFolder(folder.id)}>
-                  <div className="text-4xl text-amber-700">📁</div>
-                  <h3 className="font-bold text-amber-500 truncate flex-grow">{folder.title}</h3>
-                </div>
-                <div className="flex gap-2 mt-auto border-t border-neutral-800 pt-3">
-                  <button onClick={() => setModalState({ isOpen: true, type: 'rename', item: folder, inputValue: folder.title })} className="text-xs text-neutral-500 hover:text-amber-400">Renombrar</button>
-                  <button onClick={() => setModalState({ isOpen: true, type: 'move', item: folder, inputValue: '' })} className="text-xs text-neutral-500 hover:text-indigo-400 ml-auto" title="Mover">📦 Mover</button>
-                  <button onClick={() => setModalState({ isOpen: true, type: 'delete', item: folder, inputValue: '' })} className="text-xs text-neutral-500 hover:text-red-500 ml-2">Borrar</button>
-                </div>
-              </div>
-            ))}
-
-            {/* ARCHIVOS (Con portadas generadas dinámicamente) */}
-            {displayedItems.filter(i => i.type !== 'folder').map((book) => (
-              <div key={book.id} className="bg-neutral-900 border border-neutral-800 hover:border-red-900 transition flex flex-col relative group shadow-lg">
-                
-                {book.currentPage > 1 && (
-                  <div className="absolute top-2 left-2 bg-red-950 border border-red-800 text-red-300 text-xs font-mono px-2 py-0.5 z-10 shadow-md">
-                    Pág. {book.currentPage}
+          <div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+              
+              {/* CARPETAS */}
+              {displayedItems.filter(i => i.type === 'folder').map(folder => (
+                <div 
+                  key={folder.id} 
+                  className="bg-neutral-900 border border-neutral-800 hover:border-amber-700/50 p-4 flex flex-col group transition shadow-lg select-none cursor-pointer relative"
+                  onContextMenu={(e) => handleContextMenu(e, folder)}
+                  onClick={() => setCurrentFolder(folder.id)}
+                >
+                  <div className="absolute top-2 right-2 text-neutral-600 opacity-0 group-hover:opacity-100 transition" title="Clic derecho para opciones">⋮</div>
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="text-4xl text-amber-700">📁</div>
+                    <h3 className="font-bold text-amber-500 truncate flex-grow">{folder.title}</h3>
                   </div>
-                )}
+                </div>
+              ))}
 
-                {/* Previsualización del documento */}
-                <div className="h-48 bg-[#050505] flex items-center justify-center border-b border-neutral-800 cursor-pointer overflow-hidden relative" onClick={() => openBook(book)}>
-                  {book.thumbnailUrl ? (
-                    <img src={book.thumbnailUrl} alt="Portada" className="w-full h-full object-cover opacity-70 group-hover:opacity-100 group-hover:scale-105 transition duration-500" />
-                  ) : (
-                    <div className="text-6xl text-red-900 group-hover:scale-110 group-hover:text-red-700 transition duration-500">
-                      {book.type === 'pdf' ? '📜' : '🎞️'}
+              {/* ARCHIVOS (Con portadas generadas dinámicamente) */}
+              {displayedItems.filter(i => i.type !== 'folder').map((book) => (
+                <div 
+                  key={book.id} 
+                  className="bg-neutral-900 border border-neutral-800 hover:border-red-900 transition flex flex-col relative group shadow-lg select-none cursor-pointer"
+                  onContextMenu={(e) => handleContextMenu(e, book)}
+                >
+                  <div className="absolute top-2 right-2 z-10 text-neutral-400 bg-black/50 rounded-full w-6 h-6 flex items-center justify-center opacity-0 group-hover:opacity-100 transition" title="Clic derecho para opciones">⋮</div>
+                  
+                  {book.currentPage > 1 && (
+                    <div className="absolute top-2 left-2 bg-red-950 border border-red-800 text-red-300 text-xs font-mono px-2 py-0.5 z-10 shadow-md">
+                      Pág. {book.currentPage}
                     </div>
                   )}
-                  <div className="absolute inset-0 bg-red-900/20 opacity-0 group-hover:opacity-100 transition duration-300"></div>
-                </div>
-                
-                <div className="p-4 flex flex-col flex-grow">
-                  <h3 className="font-bold text-red-200 line-clamp-2 leading-snug mb-1" title={book.title}>
-                    {book.title}
-                  </h3>
-                  <div className="text-xs text-neutral-500 font-mono mb-4">
-                    {book.size} • {book.type.toUpperCase()}
+
+                  {/* Previsualización del documento */}
+                  <div className="h-48 bg-[#050505] flex items-center justify-center border-b border-neutral-800 overflow-hidden relative" onClick={() => openBook(book)}>
+                    {book.thumbnailUrl ? (
+                      <img src={book.thumbnailUrl} alt="Portada" className="w-full h-full object-cover opacity-70 group-hover:opacity-100 group-hover:scale-105 transition duration-500 pointer-events-none" />
+                    ) : (
+                      <div className="text-6xl text-red-900 group-hover:scale-110 group-hover:text-red-700 transition duration-500">
+                        {book.type === 'pdf' ? '📜' : '🎞️'}
+                      </div>
+                    )}
+                    <div className="absolute inset-0 bg-red-900/20 opacity-0 group-hover:opacity-100 transition duration-300"></div>
                   </div>
                   
-                  <div className="flex gap-2 mt-auto border-t border-neutral-800 pt-3">
-                    <button onClick={() => setModalState({ isOpen: true, type: 'rename', item: book, inputValue: book.title })} className="text-xs text-neutral-500 hover:text-amber-400" title="Renombrar">✏️</button>
-                    <button onClick={() => setModalState({ isOpen: true, type: 'move', item: book, inputValue: '' })} className="text-xs text-neutral-500 hover:text-indigo-400" title="Mover">📦</button>
-                    <button onClick={(e) => handleDownload(book, e)} className="text-xs text-neutral-500 hover:text-green-400" title="Descargar al dispositivo">⬇️</button>
-                    <button onClick={() => setModalState({ isOpen: true, type: 'delete', item: book, inputValue: '' })} className="text-xs text-neutral-500 hover:text-red-500 ml-auto" title="Destruir">🔥</button>
+                  <div className="p-4 flex flex-col flex-grow" onClick={() => openBook(book)}>
+                    <h3 className="font-bold text-red-200 line-clamp-2 leading-snug mb-1" title={book.title}>
+                      {book.title}
+                    </h3>
+                    <div className="text-xs text-neutral-500 font-mono">
+                      {book.size} • {book.type.toUpperCase()}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            
+            <div className="mt-8 text-center text-[11px] text-neutral-500 uppercase tracking-widest">
+              ✨ Clic derecho o dejar presionado sobre cualquier elemento para ver sus opciones
+            </div>
           </div>
         )}
       </main>
 
-      {/* ================= MODAL UNIFICADO ================= */}
+      {/* ================= MODAL DE FORMULARIOS (CREAR, RENOMBRAR, MOVER, BORRAR) ================= */}
       {modalState.isOpen && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-neutral-900 border-2 border-red-900 p-6 w-full max-w-sm shadow-[0_0_40px_rgba(150,0,0,0.3)]">
@@ -938,7 +1030,6 @@ export default function App() {
                   </select>
                 </div>
                 
-                {/* Crear carpeta directamente desde mover */}
                 <div className="border-t border-neutral-800 pt-4 mt-2">
                   <p className="text-sm text-neutral-400 mb-2 italic">¿O forjar una cámara nueva aquí?</p>
                   <div className="flex gap-2">
