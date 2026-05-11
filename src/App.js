@@ -367,9 +367,21 @@ export default function App() {
       const pdf = await window.pdfjsLib.getDocument(url).promise;
       const page = await pdf.getPage(1);
       const viewport = page.getViewport({ scale: 0.5 });
+      
+      // Mejorar también la miniatura para pantallas retina
+      const outputScale = window.devicePixelRatio || 1;
       const canvas = document.createElement('canvas');
-      canvas.width = viewport.width; canvas.height = viewport.height;
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      canvas.width = Math.floor(viewport.width * outputScale);
+      canvas.height = Math.floor(viewport.height * outputScale);
+      
+      const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+      
+      await page.render({ 
+        canvasContext: canvas.getContext('2d'), 
+        transform: transform, 
+        viewport: viewport 
+      }).promise;
+      
       thumbBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8));
       URL.revokeObjectURL(url);
     } catch(e) { console.error("Sin miniatura", e); }
@@ -522,6 +534,7 @@ export default function App() {
     } else { mostrarMensaje("Motores apagados. Intenta de nuevo."); setReadingBook(null); }
   };
 
+  // EFECTO PRINCIPAL DE RENDERIZADO DEL PDF (AHORA CON ALTA RESOLUCIÓN)
   useEffect(() => {
     if (pdfInstance && readingBook && canvasRef.current && viewerContainerRef.current) {
       setIsRendering(true);
@@ -536,9 +549,31 @@ export default function App() {
 
         const viewport = page.getViewport({ scale: newScale });
         const canvas = canvasRef.current;
-        canvas.height = viewport.height; canvas.width = viewport.width;
+        const context = canvas.getContext('2d');
+        
+        // Magia para resoluciones Retina / Móviles (Alta Densidad de Píxeles)
+        const outputScale = window.devicePixelRatio || 1;
+        
+        // Multiplicamos la resolución interna del canvas
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        
+        // Mantenemos el tamaño físico en pantalla mediante CSS
+        canvas.style.width = Math.floor(viewport.width) + "px";
+        canvas.style.height = Math.floor(viewport.height) + "px";
 
-        page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise.then(() => setIsRendering(false)).catch(() => setIsRendering(false));
+        // Aplicamos la transformación matemática para escalar el contexto
+        const transform = outputScale !== 1 
+          ? [outputScale, 0, 0, outputScale, 0, 0] 
+          : null;
+
+        const renderContext = {
+          canvasContext: context,
+          transform: transform,
+          viewport: viewport
+        };
+
+        page.render(renderContext).promise.then(() => setIsRendering(false)).catch(() => setIsRendering(false));
       });
     }
   }, [pdfInstance, currentPage, readingBook, scaleMode, customScale]);
